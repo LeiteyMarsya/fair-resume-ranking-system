@@ -11,6 +11,7 @@ PAGES = [
     st.Page("pages/2_Manage_Jobs.py", title="Manage Jobs", icon=":material/dashboard:"),
     st.Page("pages/3_Upload_Resumes.py", title="Upload Resumes", icon=":material/upload_file:"),
     st.Page("pages/4_Analyze_Job.py", title="Analyze Job", icon=":material/analytics:"),
+    st.Page("pages/5_Analyze_Resumes.py", title="Analyze Resumes", icon=":material/search:"),
 ]
 
 
