@@ -1,8 +1,12 @@
+
 import streamlit as st
 
 from db import init_database
 
+
+# ============================================================
 # PAGE CONFIGURATION
+# ============================================================
 
 st.set_page_config(
     page_title="Fair Resume Ranking System",
@@ -11,12 +15,16 @@ st.set_page_config(
 )
 
 
+# ============================================================
 # INITIALIZE DATABASE
+# ============================================================
 
 init_database()
 
 
+# ============================================================
 # APPLICATION NAVIGATION
+# ============================================================
 
 pages = [
 
@@ -55,10 +63,18 @@ pages = [
         title="Bootstrap Annotations",
         icon=":material/rule:"
     ),
+
+    st.Page(
+        "pages/7_Review_Annotations.py",
+        title="Review Annotations",
+        icon=":material/edit_note:"
+    ),
 ]
 
 
+# ============================================================
 # RUN APPLICATION
+# ============================================================
 
 pg = st.navigation(pages)
 
