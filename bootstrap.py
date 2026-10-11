@@ -265,13 +265,93 @@ def pattern_candidates(
     ]
 
 
-def find_skill_candidates(text: str) -> list[Candidate]:
-    """Suggest skills from the skill dictionary."""
-    return [
-        candidate
-        for pattern in _SKILL_PATTERNS
-        for candidate in pattern_candidates(text, pattern, "SKILL", "SKILL_DICTIONARY")
-    ]
+
+def mask_urls_and_emails(text: str) -> str:
+    """
+    Mask URLs, domain names and email addresses while preserving
+    character positions.
+
+    This prevents skill rules from incorrectly identifying words
+    such as 'github' inside 'github.com' as standalone skills.
+    """
+
+    pattern = re.compile(
+        r"""
+        \b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b
+        |
+        \b(?:https?://|ftp://|www\.)[^\s<>"']+
+        |
+        \b(?:[A-Z0-9-]+\.)+
+        (?:com|org|net|io|dev|edu|gov|co|uk|my|ai|app|info|me)
+        (?:/[^\s<>"']*)?
+        """,
+        flags=re.IGNORECASE | re.VERBOSE,
+    )
+
+    characters = list(text)
+
+    for match in pattern.finditer(text):
+
+        for index in range(match.start(), match.end()):
+
+            if characters[index] not in "\r\n":
+                characters[index] = " "
+
+    return "".join(characters)
+
+
+def find_skill_candidates(
+    text: str,
+) -> list[dict[str, Any]]:
+    """
+    Suggest skill entities while ignoring URLs and email addresses.
+
+    Character offsets still refer to the original resume text.
+    """
+
+    candidates: list[dict[str, Any]] = []
+
+    # Mask non-prose regions without changing text length.
+    searchable_text = mask_urls_and_emails(text)
+
+    skills = sorted(
+        set(COMMON_SKILLS),
+        key=len,
+        reverse=True,
+    )
+
+    for skill in skills:
+
+        normalized_skill = skill.strip().lower()
+
+        if len(normalized_skill) < 2:
+            continue
+
+        if normalized_skill in AMBIGUOUS_SKILLS:
+            continue
+
+        pattern = make_phrase_pattern(skill)
+
+        for match in pattern.finditer(searchable_text):
+
+            start = match.start()
+            end = match.end()
+
+            # Get the actual phrase from the original resume.
+            original_phrase = text[start:end]
+
+            candidates.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "text": original_phrase,
+                    "label": "SKILL",
+                    "source": "SKILL_DICTIONARY",
+                    "rule_strength": RULE_STRENGTH["SKILL"],
+                }
+            )
+
+    return candidates
 
 
 def find_education_candidates(text: str) -> list[Candidate]:
