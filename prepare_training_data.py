@@ -239,12 +239,12 @@ def prepare_documents(records: list[dict[str, Any]], nlp) -> list[Document]:
 
 # Splitting and saving
 
+
 def split_by_candidate(documents: list[Document]) -> dict[str, list[Document]]:
     """
-    Split candidate groups into train, dev and test.
-
-    Whole candidates are assigned to a split, so resumes sharing a
-    blind_id never end up in different splits.
+    Split candidate groups into train/dev/test while keeping each
+    candidate together. Prefer splits that represent rare labels
+    in training and distribute labels across splits where possible.
     """
     groups = defaultdict(list)
     for item in documents:
@@ -256,17 +256,12 @@ def split_by_candidate(documents: list[Document]) -> dict[str, list[Document]]:
     if total_groups < 3:
         raise ValueError(
             f"Found only {total_groups} unique candidate group(s).\n"
-            "At least 3 are required to create train/dev/test splits. "
-            "This is only a technical minimum; such a small dataset "
-            "cannot provide a reliable model evaluation."
+            "At least 3 are required to create train/dev/test splits."
         )
-
-    random.Random(RANDOM_SEED).shuffle(group_ids)
 
     test_count = max(1, round(total_groups * TEST_FRACTION))
     dev_count = max(1, round(total_groups * DEV_FRACTION))
 
-    # Safety net: always leave at least one group for training.
     while test_count + dev_count >= total_groups:
         if dev_count > 1:
             dev_count -= 1
@@ -275,21 +270,95 @@ def split_by_candidate(documents: list[Document]) -> dict[str, list[Document]]:
         else:
             raise ValueError("Unable to create non-empty train/dev/test splits.")
 
-    # After shuffling: first groups -> test, next -> dev, the rest -> train.
-    split_of_group = {}
-    for position, group_id in enumerate(group_ids):
-        if position < test_count:
-            split_of_group[group_id] = "test"
-        elif position < test_count + dev_count:
-            split_of_group[group_id] = "dev"
-        else:
-            split_of_group[group_id] = "train"
+    # Collect the labels present in each candidate group.
+    group_labels = {}
+    label_group_frequency = defaultdict(int)
 
-    splits: dict[str, list[Document]] = {"train": [], "dev": [], "test": []}
     for group_id, group_documents in groups.items():
-        splits[split_of_group[group_id]].extend(group_documents)
+        labels = set()
+        for item in group_documents:
+            labels.update(ent.label_ for ent in item["doc"].ents)
+        group_labels[group_id] = labels
+
+        for label in labels:
+            label_group_frequency[label] += 1
+
+    # Try many deterministic candidate assignments and select the
+    # split that best covers labels in training while balancing sizes.
+    rng = random.Random(RANDOM_SEED)
+    all_labels = set(label_group_frequency)
+    best_assignment = None
+    best_score = float("inf")
+
+    attempts = 5000 if total_groups >= 10 else 1000
+
+    for _ in range(attempts):
+        shuffled = group_ids.copy()
+        rng.shuffle(shuffled)
+
+        assignment = {}
+        for position, group_id in enumerate(shuffled):
+            if position < test_count:
+                assignment[group_id] = "test"
+            elif position < test_count + dev_count:
+                assignment[group_id] = "dev"
+            else:
+                assignment[group_id] = "train"
+
+        split_groups = {
+            name: [
+                gid for gid in group_ids
+                if assignment[gid] == name
+            ]
+            for name in ("train", "dev", "test")
+        }
+
+        split_label_sets = {
+            name: set().union(
+                *(group_labels[gid] for gid in gids)
+            ) if gids else set()
+            for name, gids in split_groups.items()
+        }
+
+        # Labels that occur in only one candidate group cannot appear
+        # in all three splits. Prioritize keeping them in training.
+        score = 0.0
+
+        for label in all_labels:
+            frequency = label_group_frequency[label]
+            if label not in split_label_sets["train"]:
+                score += 1000 if frequency == 1 else 100
+
+            # Reward representation in validation/test when possible.
+            if frequency >= 3:
+                if label not in split_label_sets["dev"]:
+                    score += 10
+                if label not in split_label_sets["test"]:
+                    score += 10
+
+        # Prefer the requested split sizes.
+        for name, target in (
+            ("train", total_groups - test_count - dev_count),
+            ("dev", dev_count),
+            ("test", test_count),
+        ):
+            score += abs(len(split_groups[name]) - target) * 0.01
+
+        if score < best_score:
+            best_score = score
+            best_assignment = assignment
+
+    splits: dict[str, list[Document]] = {
+        "train": [],
+        "dev": [],
+        "test": [],
+    }
+
+    for group_id, group_documents in groups.items():
+        splits[best_assignment[group_id]].extend(group_documents)
 
     return splits
+
 
 
 def write_docbin(documents: list[Document], output_path: Path) -> None:
@@ -400,11 +469,24 @@ def print_report(report: dict[str, Any]) -> None:
 
 # Main
 
+
 def main() -> None:
     print("Loading completed human reviews...")
     records = load_completed_reviews()
 
     nlp = spacy.blank(LANGUAGE)
+
+    # Split words from adjacent parentheses, e.g. Analysis(Advanced)
+    infixes = list(nlp.Defaults.infixes)
+    infixes.extend([
+        r"(?<=[A-Za-z0-9])(?=\()",
+        r"(?<=\))(?=[A-Za-z0-9])",
+    ])
+
+    from spacy.util import compile_infix_regex
+
+    nlp.tokenizer.infix_finditer = compile_infix_regex(infixes).finditer
+
     documents = prepare_documents(records, nlp)
     print(f"Validated {len(documents)} reviewed resume(s).")
 
