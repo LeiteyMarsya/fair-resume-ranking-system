@@ -1,0 +1,220 @@
+[1mdiff --git a/evaluation_results.json b/evaluation_results.json[m
+[1mnew file mode 100644[m
+[1mindex 0000000..ec30d98[m
+[1m--- /dev/null[m
+[1m+++ b/evaluation_results.json[m
+[36m@@ -0,0 +1,32 @@[m
+[32m+[m[32m{[m
+[32m+[m[32m  "token_acc":1.0,[m
+[32m+[m[32m  "token_p":1.0,[m
+[32m+[m[32m  "token_r":1.0,[m
+[32m+[m[32m  "token_f":1.0,[m
+[32m+[m[32m  "ents_p":0.9272727273,[m
+[32m+[m[32m  "ents_r":0.7183098592,[m
+[32m+[m[32m  "ents_f":0.8095238095,[m
+[32m+[m[32m  "ents_per_type":{[m
+[32m+[m[32m    "SKILL":{[m
+[32m+[m[32m      "p":0.9591836735,[m
+[32m+[m[32m      "r":0.7230769231,[m
+[32m+[m[32m      "f":0.8245614035[m
+[32m+[m[32m    },[m
+[32m+[m[32m    "EDUCATION":{[m
+[32m+[m[32m      "p":0.75,[m
+[32m+[m[32m      "r":1.0,[m
+[32m+[m[32m      "f":0.8571428571[m
+[32m+[m[32m    },[m
+[32m+[m[32m    "EXPERIENCE_DURATION":{[m
+[32m+[m[32m      "p":0.5,[m
+[32m+[m[32m      "r":0.5,[m
+[32m+[m[32m      "f":0.5[m
+[32m+[m[32m    },[m
+[32m+[m[32m    "PROJECT":{[m
+[32m+[m[32m      "p":0.0,[m
+[32m+[m[32m      "r":0.0,[m
+[32m+[m[32m      "f":0.0[m
+[32m+[m[32m    }[m
+[32m+[m[32m  },[m
+[32m+[m[32m  "speed":11855.467303439[m
+[32m+[m[32m}[m
+\ No newline at end of file[m
+[1mdiff --git a/prepare_training_data.py b/prepare_training_data.py[m
+[1mindex 73043f3..7a43fe4 100644[m
+[1m--- a/prepare_training_data.py[m
+[1m+++ b/prepare_training_data.py[m
+[36m@@ -239,12 +239,12 @@[m [mdef prepare_documents(records: list[dict[str, Any]], nlp) -> list[Document]:[m
+ [m
+ # Splitting and saving[m
+ [m
+[32m+[m
+ def split_by_candidate(documents: list[Document]) -> dict[str, list[Document]]:[m
+     """[m
+[31m-    Split candidate groups into train, dev and test.[m
+[31m-[m
+[31m-    Whole candidates are assigned to a split, so resumes sharing a[m
+[31m-    blind_id never end up in different splits.[m
+[32m+[m[32m    Split candidate groups into train/dev/test while keeping each[m
+[32m+[m[32m    candidate together. Prefer splits that represent rare labels[m
+[32m+[m[32m    in training and distribute labels across splits where possible.[m
+     """[m
+     groups = defaultdict(list)[m
+     for item in documents:[m
+[36m@@ -256,17 +256,12 @@[m [mdef split_by_candidate(documents: list[Document]) -> dict[str, list[Document]]:[m
+     if total_groups < 3:[m
+         raise ValueError([m
+             f"Found only {total_groups} unique candidate group(s).\n"[m
+[31m-            "At least 3 are required to create train/dev/test splits. "[m
+[31m-            "This is only a technical minimum; such a small dataset "[m
+[31m-            "cannot provide a reliable model evaluation."[m
+[32m+[m[32m            "At least 3 are required to create train/dev/test splits."[m
+         )[m
+ [m
+[31m-    random.Random(RANDOM_SEED).shuffle(group_ids)[m
+[31m-[m
+     test_count = max(1, round(total_groups * TEST_FRACTION))[m
+     dev_count = max(1, round(total_groups * DEV_FRACTION))[m
+ [m
+[31m-    # Safety net: always leave at least one group for training.[m
+     while test_count + dev_count >= total_groups:[m
+         if dev_count > 1:[m
+             dev_count -= 1[m
+[36m@@ -275,23 +270,97 @@[m [mdef split_by_candidate(documents: list[Document]) -> dict[str, list[Document]]:[m
+         else:[m
+             raise ValueError("Unable to create non-empty train/dev/test splits.")[m
+ [m
+[31m-    # After shuffling: first groups -> test, next -> dev, the rest -> train.[m
+[31m-    split_of_group = {}[m
+[31m-    for position, group_id in enumerate(group_ids):[m
+[31m-        if position < test_count:[m
+[31m-            split_of_group[group_id] = "test"[m
+[31m-        elif position < test_count + dev_count:[m
+[31m-            split_of_group[group_id] = "dev"[m
+[31m-        else:[m
+[31m-            split_of_group[group_id] = "train"[m
+[32m+[m[32m    # Collect the labels present in each candidate group.[m
+[32m+[m[32m    group_labels = {}[m
+[32m+[m[32m    label_group_frequency = defaultdict(int)[m
+ [m
+[31m-    splits: dict[str, list[Document]] = {"train": [], "dev": [], "test": []}[m
+     for group_id, group_documents in groups.items():[m
+[31m-        splits[split_of_group[group_id]].extend(group_documents)[m
+[32m+[m[32m        labels = set()[m
+[32m+[m[32m        for item in group_documents:[m
+[32m+[m[32m            labels.update(ent.label_ for ent in item["doc"].ents)[m
+[32m+[m[32m        group_labels[group_id] = labels[m
+[32m+[m
+[32m+[m[32m        for label in labels:[m
+[32m+[m[32m            label_group_frequency[label] += 1[m
+[32m+[m
+[32m+[m[32m    # Try many deterministic candidate assignments and select the[m
+[32m+[m[32m    # split that best covers labels in training while balancing sizes.[m
+[32m+[m[32m    rng = random.Random(RANDOM_SEED)[m
+[32m+[m[32m    all_labels = set(label_group_frequency)[m
+[32m+[m[32m    best_assignment = None[m
+[32m+[m[32m    best_score = float("inf")[m
+[32m+[m
+[32m+[m[32m    attempts = 5000 if total_groups >= 10 else 1000[m
+[32m+[m
+[32m+[m[32m    for _ in range(attempts):[m
+[32m+[m[32m        shuffled = group_ids.copy()[m
+[32m+[m[32m        rng.shuffle(shuffled)[m
+[32m+[m
+[32m+[m[32m        assignment = {}[m
+[32m+[m[32m        for position, group_id in enumerate(shuffled):[m
+[32m+[m[32m            if position < test_count:[m
+[32m+[m[32m                assignment[group_id] = "test"[m
+[32m+[m[32m            elif position < test_count + dev_count:[m
+[32m+[m[32m                assignment[group_id] = "dev"[m
+[32m+[m[32m            else:[m
+[32m+[m[32m                assignment[group_id] = "train"[m
+[32m+[m
+[32m+[m[32m        split_groups = {[m
+[32m+[m[32m            name: [[m
+[32m+[m[32m                gid for gid in group_ids[m
+[32m+[m[32m                if assignment[gid] == name[m
+[32m+[m[32m            ][m
+[32m+[m[32m            for name in ("train", "dev", "test")[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m[32m        split_label_sets = {[m
+[32m+[m[32m            name: set().union([m
+[32m+[m[32m                *(group_labels[gid] for gid in gids)[m
+[32m+[m[32m            ) if gids else set()[m
+[32m+[m[32m            for name, gids in split_groups.items()[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m[32m        # Labels that occur in only one candidate group cannot appear[m
+[32m+[m[32m        # in all three splits. Prioritize keeping them in training.[m
+[32m+[m[32m        score = 0.0[m
+[32m+[m
+[32m+[m[32m        for label in all_labels:[m
+[32m+[m[32m            frequency = label_group_frequency[label][m
+[32m+[m[32m            if label not in split_label_sets["train"]:[m
+[32m+[m[32m                score += 1000 if frequency == 1 else 100[m
+[32m+[m
+[32m+[m[32m            # Reward representation in validation/test when possible.[m
+[32m+[m[32m            if frequency >= 3:[m
+[32m+[m[32m                if label not in split_label_sets["dev"]:[m
+[32m+[m[32m                    score += 10[m
+[32m+[m[32m                if label not in split_label_sets["test"]:[m
+[32m+[m[32m                    score += 10[m
+[32m+[m
+[32m+[m[32m        # Prefer the requested split sizes.[m
+[32m+[m[32m        for name, target in ([m
+[32m+[m[32m            ("train", total_groups - test_count - dev_count),[m
+[32m+[m[32m            ("dev", dev_count),[m
+[32m+[m[32m            ("test", test_count),[m
+[32m+[m[32m        ):[m
+[32m+[m[32m            score += abs(len(split_groups[name]) - target) * 0.01[m
+[32m+[m
+[32m+[m[32m        if score < best_score:[m
+[32m+[m[32m            best_score = score[m
+[32m+[m[32m            best_assignment = assignment[m
+[32m+[m
+[32m+[m[32m    splits: dict[str, list[Document]] = {[m
+[32m+[m[32m        "train": [],[m
+[32m+[m[32m        "dev": [],[m
+[32m+[m[32m        "test": [],[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    for group_id, group_documents in groups.items():[m
+[32m+[m[32m        splits[best_assignment[group_id]].extend(group_documents)[m
+ [m
+     return splits[m
+ [m
+ [m
+[32m+[m
+ def write_docbin(documents: list[Document], output_path: Path) -> None:[m
+     """Save the Docs in spaCy's binary .spacy format."""[m
+     doc_bin = DocBin()[m
+[36m@@ -400,11 +469,24 @@[m [mdef print_report(report: dict[str, Any]) -> None:[m
+ [m
+ # Main[m
+ [m
+[32m+[m
+ def main() -> None:[m
+     print("Loading completed human reviews...")[m
+     records = load_completed_reviews()[m
+ [m
+     nlp = spacy.blank(LANGUAGE)[m
+[32m+[m
+[32m+[m[32m    # Split words from adjacent parentheses, e.g. Analysis(Advanced)[m
+[32m+[m[32m    infixes = list(nlp.Defaults.infixes)[m
+[32m+[m[32m    infixes.extend([[m
+[32m+[m[32m        r"(?<=[A-Za-z0-9])(?=\()",[m
+[32m+[m[32m        r"(?<=\))(?=[A-Za-z0-9])",[m
+[32m+[m[32m    ])[m
+[32m+[m
+[32m+[m[32m    from spacy.util import compile_infix_regex[m
+[32m+[m
+[32m+[m[32m    nlp.tokenizer.infix_finditer = compile_infix_regex(infixes).finditer[m
+[32m+[m
+     documents = prepare_documents(records, nlp)[m
+     print(f"Validated {len(documents)} reviewed resume(s).")[m
+ [m
+[36m@@ -422,4 +504,4 @@[m [mdef main() -> None:[m
+ [m
+ [m
+ if __name__ == "__main__":[m
+[31m-    main()[m
+\ No newline at end of file[m
+[32m+[m[32m    main()[m
