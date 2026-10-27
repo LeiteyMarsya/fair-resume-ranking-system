@@ -25,24 +25,37 @@ from job_analyzer import COMMON_SKILLS
 # One extracted entity: text, label, start, end, confidence, source.
 Entity = dict[str, Any]
 
-MODEL_NAME = "en_core_web_sm"
-NER_VERSION = "resume-ner-0.1"
+
+from pathlib import Path
+from spacy.util import compile_infix_regex
+
+BASE_DIR = Path(__file__).resolve().parent
+MODEL_PATH = BASE_DIR / "models" / "resume_ner" / "model-best"
+
+MODEL_NAME = "resume_ner/model-best"
+NER_VERSION = "resume-ner-0.2"
+
+# Load the trained resume-specific NER model.
+if not (MODEL_PATH / "config.cfg").is_file():
+    raise FileNotFoundError(
+        f"Trained resume NER model not found at: {MODEL_PATH}"
+    )
+
+nlp = spacy.load(MODEL_PATH)
+
+# Split adjacent parentheses into separate tokens, for example:
+# "Analysis(Advanced)" -> "Analysis", "(", "Advanced", ")"
+infixes = list(nlp.Defaults.infixes)
+infixes.extend([
+    r"(?<=[^\s(])(?=\()",
+    r"(?<=\()(?=[A-Za-z0-9])",
+    r"(?<=\))(?=[A-Za-z0-9])",
+])
+nlp.tokenizer.infix_finditer = compile_infix_regex(infixes).finditer
+
 
 # Section lines shorter than this are ignored (usually noise).
 MIN_SECTION_LINE_LENGTH = 8
-
-
-# Load the spaCy model
-
-try:
-    nlp = spacy.load(MODEL_NAME)
-except OSError as error:
-    raise RuntimeError(
-        "The spaCy English model is not installed.\n\n"
-        "Run this command in your terminal:\n"
-        "python -m spacy download en_core_web_sm"
-    ) from error
-
 
 # Custom terms for the EntityRuler
 

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Prepare spaCy training data from human-reviewed resume annotations.
 
 Steps:
@@ -476,10 +476,13 @@ def main() -> None:
 
     nlp = spacy.blank(LANGUAGE)
 
-    # Split words from adjacent parentheses, e.g. Analysis(Advanced)
+
+    # Split adjacent parentheses, including cases such as
+    # "Analysis(Advanced)" and "C#(Expert)".
     infixes = list(nlp.Defaults.infixes)
     infixes.extend([
-        r"(?<=[A-Za-z0-9])(?=\()",
+        r"(?<=[^\s(])(?=\()",
+        r"(?<=\()(?=[A-Za-z0-9])",
         r"(?<=\))(?=[A-Za-z0-9])",
     ])
 
