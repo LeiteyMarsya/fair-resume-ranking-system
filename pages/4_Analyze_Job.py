@@ -13,6 +13,10 @@ from job_analyzer import (
     analyze_job_description
 )
 
+from job_requirement_esco_mapper import (
+    generate_job_requirement_esco_proposals
+)
+
 
 # ============================================================
 # PAGE CONFIGURATION
@@ -552,17 +556,54 @@ if requirements:
             selected_job_id
         )
 
+        # ----------------------------------------------------
+# Generate ESCO mapping proposals
+# ----------------------------------------------------
+
+try:
+
+    esco_result = generate_job_requirement_esco_proposals(
+        selected_job_id
+    )
+
+    if esco_result["status"] == "SUCCESS":
 
         st.success(
-            "Job requirements confirmed successfully."
+            f"{esco_result['inserted']} ESCO mapping "
+            "proposal(s) generated successfully."
         )
 
         st.info(
+            "ESCO proposals are saved as PENDING "
+            "and require review before approval."
+        )
+
+    else:
+
+        st.warning(
+            "ESCO mapping proposals were not generated."
+        )
+
+except Exception as e:
+
+    st.warning(
+        "Job requirements were confirmed, but "
+        "ESCO mapping proposals could not be generated."
+    )
+
+    st.error(str(e))
+
+
+    st.success(
+            "Job requirements confirmed successfully."
+        )
+
+    st.info(
             "The job can now be changed from DRAFT "
             "to ACTIVE."
         )
 
-        st.rerun()
+    st.rerun()
 
 
 else:

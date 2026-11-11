@@ -2,6 +2,7 @@
 import streamlit as st
 
 from db import init_database
+from esco_db import create_esco_tables
 
 
 # ============================================================
@@ -20,7 +21,7 @@ st.set_page_config(
 # ============================================================
 
 init_database()
-
+create_esco_tables()
 
 # ============================================================
 # APPLICATION NAVIGATION

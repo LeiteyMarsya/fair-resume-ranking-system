@@ -23,9 +23,11 @@ DB_PATH = DATABASE_DIR / "resume_system.db"
 # DATABASE CONNECTION
 
 def get_connection() -> sqlite3.Connection:
-    """
-    Create a SQLite database connection.
-    """
+    connection = sqlite3.connect(DB_PATH)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    return connection
+
 
     connection = sqlite3.connect(
         DB_PATH
@@ -469,6 +471,20 @@ def delete_job_requirements(
 
         cursor = connection.cursor()
 
+        # Delete existing ESCO mappings first.
+        cursor.execute(
+            """
+            DELETE FROM job_requirement_esco_mappings
+            WHERE requirement_id IN (
+                SELECT requirement_id
+                FROM job_requirements
+                WHERE job_id = ?
+            )
+            """,
+            (job_id,)
+        )
+
+        # Delete the original job requirements.
         cursor.execute(
             """
             DELETE FROM job_requirements
@@ -487,6 +503,11 @@ def delete_job_requirements(
         )
 
         connection.commit()
+
+    except Exception:
+
+        connection.rollback()
+        raise
 
     finally:
 
@@ -976,7 +997,7 @@ def delete_resume_entities(
     resume_id: int
 ) -> None:
     """
-    Delete previous NER results for a resume.
+    Delete previous NER results and their ESCO mappings.
 
     This allows the resume to be analyzed again after
     the NER pipeline has been improved.
@@ -988,6 +1009,20 @@ def delete_resume_entities(
 
         cursor = connection.cursor()
 
+        # Delete existing ESCO mappings first.
+        cursor.execute(
+            """
+            DELETE FROM resume_entity_esco_mappings
+            WHERE entity_id IN (
+                SELECT entity_id
+                FROM resume_entities
+                WHERE resume_id = ?
+            )
+            """,
+            (resume_id,)
+        )
+
+        # Delete the original resume entities.
         cursor.execute(
             """
             DELETE FROM resume_entities
@@ -997,6 +1032,11 @@ def delete_resume_entities(
         )
 
         connection.commit()
+
+    except Exception:
+
+        connection.rollback()
+        raise
 
     finally:
 
