@@ -617,6 +617,71 @@ def get_job_requirements(
         connection.close()
 
 
+def update_job_requirement(
+    requirement_id: int,
+    job_id: int,
+    requirement_text: str,
+    category: str,
+    requirement_type: str,
+    importance_weight: float,
+    mandatory: bool,
+    confidence: float,
+    source: str,
+    recruiter_verified: bool = True,
+) -> None:
+
+    connection = get_connection()
+
+    try:
+
+        cursor = connection.cursor()
+
+        cursor.execute(
+            """
+            UPDATE job_requirements
+            SET requirement_text = ?,
+                category = ?,
+                requirement_type = ?,
+                importance_weight = ?,
+                mandatory = ?,
+                confidence = ?,
+                source = ?,
+                recruiter_verified = ?
+            WHERE requirement_id = ?
+              AND job_id = ?
+            """,
+            (
+                requirement_text.strip(),
+                category,
+                requirement_type,
+                importance_weight,
+                int(mandatory),
+                confidence,
+                source,
+                int(recruiter_verified),
+                requirement_id,
+                job_id,
+            )
+        )
+
+        if cursor.rowcount != 1:
+            raise ValueError(
+                f"Requirement ID {requirement_id} "
+                "was not found for this job."
+            )
+
+        connection.commit()
+
+    except Exception:
+
+        connection.rollback()
+        raise
+
+    finally:
+
+        connection.close()
+
+
 def confirm_job_requirements(
     job_id: int
 ) -> None:

@@ -7,6 +7,7 @@ from db import (
     create_job_requirement,
     get_job_requirements,
     confirm_job_requirements,
+    update_job_requirement,
 )
 
 from job_analyzer import (
@@ -498,10 +499,34 @@ if requirements:
 
             st.stop()
 
+        # ----------------------------------------------------
+        # Update recruiter-confirmed requirements
+        # ----------------------------------------------------
 
-        # ----------------------------------------------------
-        # Replace old requirements
-        # ----------------------------------------------------
+        for item in edited_requirements:
+
+            update_job_requirement(
+
+                requirement_id=item["requirement_id"],
+
+                job_id=selected_job_id,
+
+                requirement_text=item["text"],
+
+                category=item["category"],
+
+                requirement_type=item["requirement_type"],
+
+                importance_weight=item["importance"],
+
+                mandatory=item["mandatory"],
+
+                confidence=1.0,
+
+                source="RECRUITER_VERIFIED",
+
+                recruiter_verified=True,
+            )
 
         delete_job_requirements(
             selected_job_id
@@ -556,54 +581,58 @@ if requirements:
             selected_job_id
         )
 
+
         # ----------------------------------------------------
-# Generate ESCO mapping proposals
-# ----------------------------------------------------
+        # Generate ESCO mapping proposals
+        # ----------------------------------------------------
 
-try:
+        try:
 
-    esco_result = generate_job_requirement_esco_proposals(
-        selected_job_id
-    )
+            esco_result = generate_job_requirement_esco_proposals(
+                selected_job_id
+            )
 
-    if esco_result["status"] == "SUCCESS":
+            if esco_result["status"] == "SUCCESS":
+
+                st.success(
+                    f"{esco_result['inserted']} ESCO mapping "
+                    "proposal(s) generated successfully."
+                )
+
+                st.info(
+                    "ESCO proposals are saved as PENDING "
+                    "and require review before approval."
+                )
+
+            else:
+
+                st.warning(
+                    "ESCO mapping proposals were not generated."
+                )
+
+        except Exception as e:
+
+            st.warning(
+                "Job requirements were confirmed, but "
+                "ESCO mapping proposals could not be generated."
+            )
+
+            st.error(str(e))
+
+        # ----------------------------------------------------
+        # Confirmation messages
+        # ----------------------------------------------------
 
         st.success(
-            f"{esco_result['inserted']} ESCO mapping "
-            "proposal(s) generated successfully."
-        )
-
-        st.info(
-            "ESCO proposals are saved as PENDING "
-            "and require review before approval."
-        )
-
-    else:
-
-        st.warning(
-            "ESCO mapping proposals were not generated."
-        )
-
-except Exception as e:
-
-    st.warning(
-        "Job requirements were confirmed, but "
-        "ESCO mapping proposals could not be generated."
-    )
-
-    st.error(str(e))
-
-
-    st.success(
             "Job requirements confirmed successfully."
         )
 
-    st.info(
+        st.info(
             "The job can now be changed from DRAFT "
             "to ACTIVE."
         )
 
-    st.rerun()
+        st.rerun()
 
 
 else:
