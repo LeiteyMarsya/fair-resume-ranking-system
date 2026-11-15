@@ -18,6 +18,9 @@ from job_requirement_esco_mapper import (
     generate_job_requirement_esco_proposals
 )
 
+from job_occupation_esco_mapper import (
+    generate_job_occupation_esco_proposals
+)
 
 # ============================================================
 # PAGE CONFIGURATION
@@ -615,6 +618,58 @@ if requirements:
             st.warning(
                 "Job requirements were confirmed, but "
                 "ESCO mapping proposals could not be generated."
+            )
+
+            st.error(str(e))
+
+        # ----------------------------------------------------
+        # Generate ESCO occupation proposals (Part 5F)
+        # ----------------------------------------------------
+
+        try:
+
+            occupation_result = generate_job_occupation_esco_proposals(
+                selected_job_id
+            )
+
+            if occupation_result["status"] == "SUCCESS":
+
+                st.success(
+                    f"{occupation_result['inserted']} ESCO occupation "
+                    "proposal(s) generated successfully."
+                )
+
+                st.info(
+                    "Occupation proposals are saved as PENDING "
+                    "and require recruiter review before approval."
+                )
+
+            elif occupation_result["status"] == "NO_MATCH":
+
+                st.warning(
+                    "No suitable ESCO occupation match was found "
+                    "for this job title."
+                )
+
+            elif occupation_result["status"] == "AMBIGUOUS":
+
+                st.warning(
+                    "The job title matches multiple ESCO occupations. "
+                    "Manual investigation is required."
+                )
+
+            else:
+
+                st.warning(
+                    "ESCO occupation proposals were not generated: "
+                    f"{occupation_result['status']}"
+                )
+
+        except Exception as e:
+
+            st.warning(
+                "Job requirements were confirmed, but "
+                "ESCO occupation proposals could not be generated."
             )
 
             st.error(str(e))

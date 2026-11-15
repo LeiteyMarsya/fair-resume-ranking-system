@@ -70,6 +70,12 @@ pages = [
         title="Review Annotations",
         icon=":material/edit_note:"
     ),
+
+    st.Page(
+        "pages/8_Review_ESCO_Occupations.py",
+        title="Review ESCO Occupations",
+        icon=":material/fact_check:"
+    ),
 ]
 
 

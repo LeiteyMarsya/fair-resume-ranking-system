@@ -1,10 +1,28 @@
 import sqlite3
+import os
 from pathlib import Path
-
 
 BASE_DIR = Path(__file__).resolve().parent
 
-DATABASE_PATH = BASE_DIR / "data" / "database" / "resume_system.db"
+DEFAULT_DATABASE_PATH = (
+    BASE_DIR / "data" / "database" / "resume_system.db"
+)
+
+configured_database_path = os.environ.get(
+    "ESCO_DATABASE_PATH"
+)
+
+if configured_database_path:
+
+    DATABASE_PATH = Path(configured_database_path)
+
+    if not DATABASE_PATH.is_absolute():
+
+        DATABASE_PATH = BASE_DIR / DATABASE_PATH
+
+else:
+
+    DATABASE_PATH = DEFAULT_DATABASE_PATH
 
 
 def get_esco_connection():

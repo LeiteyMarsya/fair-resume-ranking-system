@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import os
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
@@ -17,7 +18,23 @@ DATABASE_DIR.mkdir(
     exist_ok=True
 )
 
-DB_PATH = DATABASE_DIR / "resume_system.db"
+DEFAULT_DB_PATH = DATABASE_DIR / "resume_system.db"
+
+configured_database_path = os.environ.get(
+    "ESCO_DATABASE_PATH"
+)
+
+if configured_database_path:
+
+    DB_PATH = Path(configured_database_path)
+
+    if not DB_PATH.is_absolute():
+
+        DB_PATH = BASE_DIR / DB_PATH
+
+else:
+
+    DB_PATH = DEFAULT_DB_PATH
 
 
 # DATABASE CONNECTION
