@@ -45,16 +45,6 @@ def get_connection() -> sqlite3.Connection:
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
 
-
-    connection = sqlite3.connect(
-        DB_PATH
-    )
-
-    connection.row_factory = sqlite3.Row
-
-    return connection
-
-
 # DATABASE INITIALIZATION
 
 def init_database() -> None:
@@ -279,6 +269,120 @@ def init_database() -> None:
                 INTEGER NOT NULL DEFAULT 0
                 """
             )
+
+        # ====================================================
+        # PART 6 - FAIRNESS EVALUATION TABLES
+        # ====================================================
+
+        # DEMOGRAPHIC AUDIT DATA
+        # Demographic attributes are stored separately from resumes.
+        # They must never be used for candidate screening.
+
+
+# DEMOGRAPHIC AUDIT DATA
+# Demographic attributes are stored separately from resumes.
+# They must never be used for candidate screening.
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fairness_audit_data (
+                audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                application_id INTEGER NOT NULL,
+                attribute_name TEXT NOT NULL,
+                attribute_value TEXT,
+                availability_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+                data_source TEXT,
+                is_simulated INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+
+                FOREIGN KEY (application_id)
+                    REFERENCES applications(application_id),
+
+                UNIQUE(application_id, attribute_name),
+
+                CHECK (availability_status IN (
+                    'AVAILABLE',
+                    'MISSING',
+                    'DECLINED',
+                    'NOT_COLLECTED',
+                    'UNKNOWN'
+                )),
+
+                CHECK (is_simulated IN (0, 1))
+            )
+            """
+        )
+
+# Migration: add is_simulated to existing fairness audit table
+
+
+        cursor.execute("""
+            PRAGMA table_info(fairness_audit_data)
+            """)
+
+        audit_columns = {
+            row["name"]
+            for row in cursor.fetchall()
+        }
+
+        if "is_simulated" not in audit_columns:
+            cursor.execute("""
+                ALTER TABLE fairness_audit_data
+                ADD COLUMN is_simulated INTEGER NOT NULL DEFAULT 0
+                """)
+
+        # SCREENING OUTCOMES
+        # Records actual or explicitly simulated outcomes.
+        # 1 = selected, 0 = not selected.
+        # No outcome is recorded until a decision exists.
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fairness_screening_outcomes (
+                outcome_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                application_id INTEGER NOT NULL UNIQUE,
+
+                favourable_outcome INTEGER NOT NULL,
+
+                is_simulated INTEGER NOT NULL DEFAULT 0,
+
+                outcome_source TEXT,
+
+                recorded_at TEXT NOT NULL,
+
+                FOREIGN KEY (application_id)
+                    REFERENCES applications(application_id),
+
+                CHECK (favourable_outcome IN (0, 1)),
+
+                CHECK (is_simulated IN (0, 1))
+            )
+            """
+        )
+
+
+        # PART 6C - QUALIFICATION LABELS
+        # Qualification must be independently assessed using job-related criteria.
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fairness_qualification_labels (
+                qualification_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                application_id INTEGER NOT NULL UNIQUE,
+                is_qualified INTEGER NOT NULL,
+                is_simulated INTEGER NOT NULL DEFAULT 0,
+                qualification_source TEXT,
+                recorded_at TEXT NOT NULL,
+
+                FOREIGN KEY (application_id)
+                    REFERENCES applications(application_id),
+
+                CHECK (is_qualified IN (0, 1)),
+                CHECK (is_simulated IN (0, 1))
+            )
+            """
+        )
 
 
         connection.commit()
@@ -1073,6 +1177,73 @@ def get_job_applications(
         connection.close()
 
 
+# GET APPLICATION DETAILS FOR QUALIFICATION ASSESSMENT
+
+def get_application_assessment_details(
+    application_id: Optional[int] = None
+):
+    """
+    Retrieve application, candidate, resume and job details
+    for the independent qualification assessment workflow.
+    """
+
+    connection = get_connection()
+
+    try:
+
+        cursor = connection.cursor()
+
+        query = """
+            SELECT
+                a.application_id,
+                a.application_status,
+                a.created_at AS application_created_at,
+                c.blind_id,
+                c.name AS candidate_name,
+                c.email AS candidate_email,
+                c.phone AS candidate_phone,
+                r.resume_id,
+                r.original_filename,
+                r.extracted_text,
+                r.extraction_status,
+                j.job_id,
+                j.job_title,
+                j.seniority_level,
+                j.description AS job_description,
+                j.status AS job_status,
+                j.requirements_confirmed
+            FROM applications a
+            JOIN candidates c ON a.candidate_id = c.candidate_id
+            JOIN resumes r ON a.resume_id = r.resume_id
+            JOIN jobs j ON a.job_id = j.job_id
+        """
+
+        parameters = ()
+
+        if application_id is not None:
+
+            query += """
+                WHERE a.application_id = ?
+            """
+
+            parameters = (application_id,)
+
+        query += """
+            ORDER BY a.application_id DESC
+        """
+
+        cursor.execute(query, parameters)
+
+        if application_id is not None:
+            return cursor.fetchone()
+
+        return cursor.fetchall()
+
+    finally:
+
+        connection.close()
+
+
 # RESUME ENTITY FUNCTIONS
 
 def delete_resume_entities(
@@ -1219,4 +1390,378 @@ def get_resume_entities(
 
     finally:
 
+        connection.close()
+
+
+# ============================================================
+# PART 6 - FAIRNESS EVALUATION DATABASE FUNCTIONS
+# ============================================================
+
+
+# SAVE DEMOGRAPHIC AUDIT DATA
+
+def save_fairness_audit_data(
+    application_id: int,
+    attribute_name: str,
+    attribute_value: Optional[str],
+    availability_status: str,
+    data_source: Optional[str] = None,
+    is_simulated: bool = False,
+) -> int:
+    """
+    Save or update demographic audit information.
+
+    Demographic information is used only for fairness
+    evaluation, not candidate screening.
+    """
+
+    allowed_statuses = {
+        "AVAILABLE",
+        "MISSING",
+        "DECLINED",
+        "NOT_COLLECTED",
+        "UNKNOWN",
+    }
+
+    if availability_status not in allowed_statuses:
+        raise ValueError("Invalid availability status.")
+
+    if not isinstance(is_simulated, bool):
+        raise ValueError("is_simulated must be True or False.")
+
+    if not attribute_name or not attribute_name.strip():
+        raise ValueError("Attribute name cannot be empty.")
+
+    attribute_name = attribute_name.strip()
+
+    if availability_status == "AVAILABLE":
+        if attribute_value is None or not attribute_value.strip():
+            raise ValueError(
+                "An attribute value is required when status is AVAILABLE."
+            )
+        attribute_value = attribute_value.strip()
+    else:
+        if attribute_value is not None:
+            raise ValueError(
+                "Do not store demographic values when data is unavailable."
+            )
+
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+
+        created_at = datetime.now(timezone.utc).isoformat()
+
+        cursor.execute(
+            """
+            INSERT INTO fairness_audit_data (
+                application_id,
+                attribute_name,
+                attribute_value,
+                availability_status,
+                data_source,
+                is_simulated,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+
+            ON CONFLICT(application_id, attribute_name)
+            DO UPDATE SET
+                attribute_value = excluded.attribute_value,
+                availability_status = excluded.availability_status,
+                data_source = excluded.data_source,
+                is_simulated = excluded.is_simulated,
+                created_at = excluded.created_at
+            """,
+            (
+                application_id,
+                attribute_name,
+                attribute_value,
+                availability_status,
+                data_source,
+                int(is_simulated),
+                created_at,
+            )
+        )
+
+        connection.commit()
+
+        cursor.execute(
+            """
+            SELECT audit_id
+            FROM fairness_audit_data
+            WHERE application_id = ?
+              AND attribute_name = ?
+            """,
+            (application_id, attribute_name)
+        )
+
+        return int(cursor.fetchone()["audit_id"])
+
+    except Exception:
+        connection.rollback()
+        raise
+
+    finally:
+        connection.close()
+
+
+# GET DEMOGRAPHIC AUDIT DATA
+
+def get_fairness_audit_data(
+    application_id: Optional[int] = None,
+    include_simulated: bool = False
+):
+    """
+    Retrieve demographic audit information.
+
+    By default, simulated records are excluded.
+    """
+
+    if not isinstance(include_simulated, bool):
+        raise ValueError("include_simulated must be True or False.")
+
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+
+        query = """
+            SELECT *
+            FROM fairness_audit_data
+        """
+
+        conditions = []
+        parameters = []
+
+        if application_id is not None:
+            conditions.append("application_id = ?")
+            parameters.append(application_id)
+
+        if not include_simulated:
+            conditions.append("is_simulated = 0")
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
+        query += " ORDER BY application_id, attribute_name"
+
+        cursor.execute(query, parameters)
+
+        return cursor.fetchall()
+
+    finally:
+        connection.close()
+
+
+# RECORD SCREENING OUTCOME
+
+def record_screening_outcome(
+    application_id: int,
+    favourable_outcome: int,
+    is_simulated: bool = False,
+    outcome_source: Optional[str] = None,
+) -> int:
+    """
+    Record a screening decision.
+
+    favourable_outcome:
+        1 = Selected
+        0 = Not selected
+
+    is_simulated:
+        False = Actual outcome
+        True = Simulated outcome
+    """
+
+    if favourable_outcome not in (0, 1):
+        raise ValueError(
+            "Favourable outcome must be 0 or 1."
+        )
+
+    if is_simulated not in (True, False, 0, 1):
+        raise ValueError(
+            "is_simulated must be True or False."
+        )
+
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+
+        recorded_at = datetime.now(timezone.utc).isoformat()
+
+        cursor.execute(
+            """
+            INSERT INTO fairness_screening_outcomes (
+                application_id,
+                favourable_outcome,
+                is_simulated,
+                outcome_source,
+                recorded_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+
+            ON CONFLICT(application_id)
+            DO UPDATE SET
+                favourable_outcome = excluded.favourable_outcome,
+                is_simulated = excluded.is_simulated,
+                outcome_source = excluded.outcome_source,
+                recorded_at = excluded.recorded_at
+            """,
+            (
+                application_id,
+                int(favourable_outcome),
+                int(is_simulated),
+                outcome_source,
+                recorded_at,
+            )
+        )
+
+        connection.commit()
+
+        cursor.execute(
+            """
+            SELECT outcome_id
+            FROM fairness_screening_outcomes
+            WHERE application_id = ?
+            """,
+            (application_id,)
+        )
+
+        return int(cursor.fetchone()["outcome_id"])
+
+    except Exception:
+        connection.rollback()
+        raise
+
+    finally:
+        connection.close()
+
+
+# GET SCREENING OUTCOMES
+
+def get_screening_outcomes(
+    include_simulated: bool = False
+):
+    """
+    Retrieve screening outcomes.
+
+    By default, only actual screening outcomes
+    are returned.
+    """
+
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+
+        if include_simulated:
+
+            cursor.execute(
+                """
+                SELECT *
+                FROM fairness_screening_outcomes
+                ORDER BY application_id
+                """
+            )
+
+        else:
+
+            cursor.execute(
+                """
+                SELECT *
+                FROM fairness_screening_outcomes
+                WHERE is_simulated = 0
+                ORDER BY application_id
+                """
+            )
+
+        return cursor.fetchall()
+
+    finally:
+        connection.close()
+
+
+def save_qualification_label(
+    application_id: int,
+    is_qualified: bool,
+    is_simulated: bool = False,
+    qualification_source: str = None
+):
+    """Save or update an independently verified qualification label."""
+
+    if not isinstance(is_qualified, bool):
+        raise ValueError("is_qualified must be True or False.")
+
+    if not isinstance(is_simulated, bool):
+        raise ValueError("is_simulated must be True or False.")
+
+    from datetime import datetime
+
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO fairness_qualification_labels (
+                application_id,
+                is_qualified,
+                is_simulated,
+                qualification_source,
+                recorded_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+
+            ON CONFLICT(application_id)
+            DO UPDATE SET
+                is_qualified = excluded.is_qualified,
+                is_simulated = excluded.is_simulated,
+                qualification_source = excluded.qualification_source,
+                recorded_at = excluded.recorded_at
+            """,
+            (
+                application_id,
+                int(is_qualified),
+                int(is_simulated),
+                qualification_source,
+                datetime.now().isoformat(timespec="seconds")
+            )
+        )
+
+        connection.commit()
+
+    finally:
+        connection.close()
+
+
+def get_qualification_labels(include_simulated=False):
+    """Retrieve qualification labels, excluding simulated data by default."""
+
+    if not isinstance(include_simulated, bool):
+        raise ValueError("include_simulated must be True or False.")
+
+    connection = get_connection()
+
+    try:
+        cursor = connection.cursor()
+
+        query = """
+            SELECT *
+            FROM fairness_qualification_labels
+        """
+
+        if not include_simulated:
+            query += " WHERE is_simulated = 0"
+
+        query += " ORDER BY application_id"
+
+        cursor.execute(query)
+
+        return cursor.fetchall()
+
+    finally:
         connection.close()

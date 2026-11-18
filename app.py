@@ -76,6 +76,18 @@ pages = [
         title="Review ESCO Occupations",
         icon=":material/fact_check:"
     ),
+
+        st.Page(
+        "pages/9_Fairness_Evaluation.py",
+        title="Fairness Evaluation",
+        icon=":material/balance:"
+    ),
+
+    st.Page(
+    "pages/10_Qualification_Assessment.py",
+    title="Qualification Assessment",
+    icon=":material/fact_check:"
+),
 ]
 
 
