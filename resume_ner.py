@@ -33,7 +33,7 @@ BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "models" / "resume_ner" / "model-best"
 
 MODEL_NAME = "resume_ner/model-best"
-NER_VERSION = "resume-ner-0.2"
+NER_VERSION = "resume-ner-0.3"
 
 # Load the trained resume-specific NER model.
 if not (MODEL_PATH / "config.cfg").is_file():
@@ -181,6 +181,14 @@ SECTION_PATTERNS = {
         "certificates",
         "professional certifications",
     },
+    "SKILL": {
+        "skills",
+        "technical skills",
+        "key skills",
+        "core skills",
+        "core competencies",
+        "areas of expertise",
+    },
 }
 
 # Reverse lookup: heading text -> section type (built once).
@@ -224,43 +232,60 @@ def get_section_type(line: str) -> str | None:
 
 def extract_section_entities(text: str) -> list[Entity]:
     """
-    Label each meaningful line with the resume section it appears in.
+    Label each meaningful line using its resume section.
 
-    Temporary baseline: a trained NER model will later replace this
-    heuristic with learned entity detection.
+    Entity offsets point to the exact extracted text,
+    excluding leading spaces and bullet characters.
     """
     entities = []
     current_section = None
-    cursor = 0  # character offset of the current line in `text`
+    cursor = 0
 
-    # keepends=True keeps "\n" / "\r\n" so the offsets stay exact.
     for raw_line in text.splitlines(keepends=True):
         line_start = cursor
         cursor += len(raw_line)
+
         line = raw_line.rstrip("\r\n")
 
-        # A heading starts a new section.
+        # A recognised heading starts a new section.
         heading_type = get_section_type(line)
+
         if heading_type:
             current_section = heading_type
             continue
 
+        if not current_section:
+            continue
+
         cleaned_line = line.strip()
-        if not current_section or len(cleaned_line) < MIN_SECTION_LINE_LENGTH:
+
+        if len(cleaned_line) < MIN_SECTION_LINE_LENGTH:
             continue
 
         display_text = BULLET_PATTERN.sub("", cleaned_line).strip()
-        if display_text:
-            entities.append(
-                _make_entity(
-                    display_text,
-                    current_section,
-                    line_start,
-                    line_start + len(line),
-                    confidence=None,
-                    source="SECTION_BASED_EXTRACTION",
-                )
+
+        if not display_text:
+            continue
+
+        # Locate the exact extracted text in the original line.
+        text_offset = line.find(display_text)
+
+        if text_offset == -1:
+            continue
+
+        start = line_start + text_offset
+        end = start + len(display_text)
+
+        entities.append(
+            _make_entity(
+                display_text,
+                current_section,
+                start,
+                end,
+                confidence=None,
+                source="SECTION_BASED_EXTRACTION",
             )
+        )
 
     return entities
 
@@ -278,27 +303,58 @@ def sort_entities(entities: list[Entity]) -> list[Entity]:
     """
     Remove overlapping entities and return the rest in reading order.
 
-    When two entities overlap, the longer span wins. On a tie, the one
-    that appears first wins.
+    Rules:
+    1. Longer entity spans have priority.
+    2. For identical spans, more specific labels have priority.
+    3. Source priority resolves remaining ties.
     """
-    # Consider the longest spans first.
+
+    label_priority = {
+        "EMAIL": 1,
+        "PHONE": 1,
+        "EXPERIENCE_DURATION": 2,
+        "CERTIFICATION": 3,
+        "EDUCATION": 3,
+        "SKILL": 3,
+        "PROJECT": 4,
+        "COURSE": 4,
+        "JOB_TITLE": 4,
+        "ORGANIZATION": 4,
+        "EXPERIENCE": 5,
+    }
+
+    source_priority = {
+        "REGEX": 1,
+        "SPACY_NER": 2,
+        "SECTION_BASED_EXTRACTION": 3,
+    }
+
     by_priority = sorted(
         entities,
-        key=lambda e: (-(e["end"] - e["start"]), e["start"], e["label"]),
+        key=lambda e: (
+            -(e["end"] - e["start"]),
+            e["start"],
+            label_priority.get(e["label"], 99),
+            source_priority.get(e["source"], 99),
+        ),
     )
 
-    accepted: list[Entity] = []
+    accepted = []
 
     for entity in by_priority:
         overlaps = any(
-            entity["start"] < kept["end"] and entity["end"] > kept["start"]
+            entity["start"] < kept["end"]
+            and entity["end"] > kept["start"]
             for kept in accepted
         )
+
         if not overlaps:
             accepted.append(entity)
 
-    return sorted(accepted, key=lambda e: (e["start"], e["end"]))
-
+    return sorted(
+        accepted,
+        key=lambda e: (e["start"], e["end"]),
+    )
 
 def extract_resume_entities(text: str) -> dict[str, Any]:
     """
