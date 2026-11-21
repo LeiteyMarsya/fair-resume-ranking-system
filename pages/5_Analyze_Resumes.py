@@ -7,8 +7,7 @@ from collections import Counter, defaultdict
 import streamlit as st
 
 from db import (
-    create_resume_entity,
-    delete_resume_entities,
+    reconcile_resume_entities,
     get_all_jobs,
     get_all_resumes,
     get_job_resumes,
@@ -49,36 +48,25 @@ def select_resumes() -> list:
 
 # Running NER
 
-def analyze_resume(resume) -> int | None:
-    """
-    Run NER on one resume and save the entities.
+def analyze_resume(resume):
 
-    Returns the number of entities saved, or None if the resume has no text.
-    """
     text = resume["extracted_text"] or ""
+
     if not text.strip():
         return None
 
     resume_id = resume["resume_id"]
 
-    # Replace any results from a previous run.
-    delete_resume_entities(resume_id)
-
+    # Extract entities using the current NER pipeline.
     entities = extract_resume_entities(text)["entities"]
 
-    for entity in entities:
-        create_resume_entity(
-            resume_id=resume_id,
-            entity_text=entity["text"],
-            entity_label=entity["label"],
-            start_char=entity["start"],
-            end_char=entity["end"],
-            confidence=entity["confidence"],
-            source=entity["source"],
-        )
+    # Safely reconcile extracted entities with existing records.
+    result = reconcile_resume_entities(
+        resume_id=resume_id,
+        extracted_entities=entities,
+    )
 
-    return len(entities)
-
+    return result["total_entities"]
 
 def run_ner(resumes: list) -> None:
     """Analyze every resume, showing progress and a final summary."""

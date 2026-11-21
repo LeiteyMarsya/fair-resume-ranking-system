@@ -33,7 +33,7 @@ BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "models" / "resume_ner" / "model-best"
 
 MODEL_NAME = "resume_ner/model-best"
-NER_VERSION = "resume-ner-0.3"
+NER_VERSION = "resume-ner-0.4"
 
 # Load the trained resume-specific NER model.
 if not (MODEL_PATH / "config.cfg").is_file():
@@ -143,7 +143,7 @@ REGEX_ENTITY_PATTERNS = (
 )
 
 # Bullet characters at the start of a line.
-BULLET_PATTERN = re.compile(r"^[•●▪◦*\-]+\s*")
+BULLET_PATTERN = re.compile(r"^[\s•●▪◦‣*\-]+\s*")
 
 
 # Resume section headings
@@ -175,6 +175,13 @@ SECTION_PATTERNS = {
         "relevant coursework",
         "coursework",
         "relevant courses",
+        "training",
+        "training courses",
+        "training and courses",
+        "professional development",
+        "training courses",
+        "training and courses",
+        "training courses and development",
     },
     "CERTIFICATION": {
         "certifications",
@@ -188,6 +195,9 @@ SECTION_PATTERNS = {
         "core skills",
         "core competencies",
         "areas of expertise",
+        "technical competencies",
+        "professional skills",
+        "technical expertise",
     },
 }
 
@@ -198,6 +208,35 @@ _HEADING_TO_SECTION = {
     for heading in headings
 }
 
+# Sections that should stop the previous extraction section.
+# These sections are not currently used for entity extraction.
+NON_ENTITY_SECTION_HEADINGS = {
+    "languages",
+    "language",
+    "language proficiency",
+    "language skills",
+    "volunteering",
+    "volunteer experience",
+    "volunteering activities",
+    "volunteering activities and extracurriculars",
+    "extracurricular activities",
+    "extracurriculars",
+    "interests",
+    "hobbies",
+    "interests hobbies",
+    "references",
+    "personal details",
+    "personal information",
+    "contact",
+    "contact details",
+    "awards",
+    "achievements",
+    "awards achievements",
+    "activities",
+    "declaration",
+    "other",
+    "additional information",
+}
 
 def _make_entity(
     text: str,
@@ -219,76 +258,331 @@ def _make_entity(
 
 
 def normalize_heading(line: str) -> str:
-    """Lowercase a line and strip punctuation, e.g. 'Work Experience:' -> 'work experience'."""
-    cleaned = re.sub(r"[^a-zA-Z0-9 ]", "", line)
+    """
+    Normalize resume section headings.
+
+    Examples:
+        Work Experience: -> work experience
+        Interests & Hobbies -> interests hobbies
+        Training / Courses -> training courses
+    """
+
+    cleaned = re.sub(r"[^a-zA-Z0-9 ]", " ", line)
     cleaned = re.sub(r"\s+", " ", cleaned)
+
     return cleaned.strip().lower()
 
 
 def get_section_type(line: str) -> str | None:
-    """Return the section type if the line is a known heading, else None."""
-    return _HEADING_TO_SECTION.get(normalize_heading(line))
+    """Return a recognised extraction section type."""
 
+    normalized = normalize_heading(line)
+
+    return _HEADING_TO_SECTION.get(normalized)
+
+def get_heading_details(line: str):
+    """
+    Detect standalone and inline section headings.
+
+    Examples:
+        SKILLS
+        Technical Skills:
+        Technical Skills: Python, SQL
+        Languages: English, German
+
+    Returns:
+        (section_type, remaining_content)
+
+    A section_type of None with remaining_content=None
+    means the line is not a recognised heading.
+    """
+
+    cleaned = BULLET_PATTERN.sub("", line.strip()).strip()
+
+    if not cleaned:
+        return None, None
+
+    normalized = normalize_heading(cleaned)
+
+    # Standalone non-entity heading.
+    if normalized in NON_ENTITY_SECTION_HEADINGS:
+        return "NON_ENTITY", ""
+
+    # Standalone entity heading.
+    section_type = _HEADING_TO_SECTION.get(normalized)
+
+    if section_type:
+        return section_type, ""
+
+    # Check for inline headings, such as:
+    # Languages: English (Native)
+    if ":" in cleaned:
+
+        prefix, remaining = cleaned.split(":", 1)
+
+        normalized_prefix = normalize_heading(prefix)
+
+        if normalized_prefix in NON_ENTITY_SECTION_HEADINGS:
+            return "NON_ENTITY", ""
+
+        section_type = _HEADING_TO_SECTION.get(normalized_prefix)
+
+        if section_type:
+            return section_type, remaining.strip()
+
+    return None, None
+
+
+def is_noise_text(value: str) -> bool:
+    """
+    Reject obvious resume formatting noise and template text.
+    """
+
+    cleaned = value.strip()
+
+    if not cleaned:
+        return True
+
+    # Normalise curly apostrophes.
+    cleaned = cleaned.replace("\u2018", "'")
+    cleaned = cleaned.replace("\u2019", "'")
+
+    # Decorative separator lines.
+    if re.fullmatch(
+        r"[_=\-\u2013\u2014\s]{5,}",
+        cleaned
+    ):
+        return True
+
+    # Website and template footer text.
+    noise_patterns = [
+        r"^www\.enhancv\.com$",
+        r"^powered\s+by$",
+        r"don't\s+forget\s+to\s+use\s+resume",
+        r"worded\s+to\s+scan\s+your\s+resume",
+        r"before\s+you\s+send\s+it\s+off",
+        r"proven\s+to\s+get\s+you\s+more\s+jobs",
+    ]
+
+    return any(
+        re.search(
+            pattern,
+            cleaned,
+            flags=re.IGNORECASE
+        )
+        for pattern in noise_patterns
+    )
 
 def extract_section_entities(text: str) -> list[Entity]:
     """
-    Label each meaningful line using its resume section.
+    Extract entities based on recognised resume sections.
 
-    Entity offsets point to the exact extracted text,
-    excluding leading spaces and bullet characters.
+    Improvements:
+    - Recognises inline section headings.
+    - Stops extraction at non-entity sections.
+    - Rejects obvious decorative and template noise.
+    - Splits individual skills while preserving ETL.
+    - Preserves original character offsets.
     """
+
     entities = []
+
     current_section = None
     cursor = 0
 
     for raw_line in text.splitlines(keepends=True):
+
         line_start = cursor
         cursor += len(raw_line)
 
         line = raw_line.rstrip("\r\n")
 
-        # A recognised heading starts a new section.
-        heading_type = get_section_type(line)
+        # Ignore obvious noise before extracting anything.
+        if is_noise_text(line):
+            continue
+
+        # Detect standalone and inline headings.
+        heading_type, heading_content = get_heading_details(line)
+
+        if heading_type == "NON_ENTITY":
+            current_section = None
+            continue
 
         if heading_type:
             current_section = heading_type
-            continue
 
-        if not current_section:
-            continue
+            # Standalone heading: wait for the next line.
+            if not heading_content:
+                continue
 
-        cleaned_line = line.strip()
+            # Inline heading: extract the remaining content.
+            display_text = heading_content
 
-        if len(cleaned_line) < MIN_SECTION_LINE_LENGTH:
-            continue
+        else:
 
-        display_text = BULLET_PATTERN.sub("", cleaned_line).strip()
+            if not current_section:
+                continue
+
+            display_text = line.strip()
+
+            # Remove leading bullet characters.
+            display_text = BULLET_PATTERN.sub(
+                "",
+                display_text
+            ).strip()
 
         if not display_text:
             continue
 
-        # Locate the exact extracted text in the original line.
-        text_offset = line.find(display_text)
-
-        if text_offset == -1:
+        if is_noise_text(display_text):
             continue
 
-        start = line_start + text_offset
-        end = start + len(display_text)
+        # Find the exact content position inside the original line.
+        display_offset = line.find(display_text)
 
-        entities.append(
-            _make_entity(
-                display_text,
-                current_section,
-                start,
-                end,
-                confidence=None,
-                source="SECTION_BASED_EXTRACTION",
+        if display_offset == -1:
+            continue
+
+        # --------------------------------------------------
+        # SKILL SECTION
+        # --------------------------------------------------
+
+        if current_section == "SKILL":
+
+            content_offset = 0
+
+            # Remove introductory labels such as:
+            # Programming Languages: Python, Java
+            # Tools: Excel, Power BI
+            colon_position = display_text.find(":")
+
+            if colon_position != -1:
+
+                prefix = display_text[:colon_position].strip()
+
+                if len(prefix) <= 40:
+                    content_offset = colon_position + 1
+
+            content = display_text[content_offset:]
+
+            # Keep compound ETL skills together.
+            # Other commas and semicolons separate skills.
+            skill_pattern = re.compile(
+                r"[^,;]+(?:,\s*(?=(?:Transform|Load)\b)[^,;]+)*",
+                flags=re.IGNORECASE,
             )
-        )
+
+            # Only remove proficiency annotations.
+            proficiency_pattern = re.compile(
+                r"\s*\((?:basic|beginner|intermediate|int\.?|"
+                r"proficient|experienced|advanced|expert)\)",
+                flags=re.IGNORECASE,
+            )
+
+            for match in skill_pattern.finditer(content):
+
+                raw_item = match.group(0)
+
+                skill_text = proficiency_pattern.sub(
+                    "",
+                    raw_item
+                ).strip()
+
+                if not skill_text:
+                    continue
+
+                if is_noise_text(skill_text):
+                    continue
+
+                if (
+                    len(skill_text) < 2
+                    and skill_text.upper() not in {"R", "C"}
+                ):
+                    continue
+
+                local_search_start = (
+                    display_offset
+                    + content_offset
+                    + match.start()
+                )
+
+                text_offset = line.find(
+                    skill_text,
+                    local_search_start
+                )
+
+                if text_offset == -1:
+                    continue
+
+                start = line_start + text_offset
+                end = start + len(skill_text)
+
+                entities.append(
+                    _make_entity(
+                        skill_text,
+                        "SKILL",
+                        start,
+                        end,
+                        confidence=None,
+                        source="SECTION_BASED_EXTRACTION",
+                    )
+                )
+
+        # --------------------------------------------------
+        # OTHER ENTITY SECTIONS
+        # --------------------------------------------------
+
+        else:
+
+            if len(display_text) < MIN_SECTION_LINE_LENGTH:
+                continue
+
+            # Skip course provider and date information.
+            if current_section == "COURSE":
+                provider_patterns = [
+                    r"^certification obtained from\b",
+                    r"^(coursera|udemy|edx|linkedin learning)\s*,?\s*\d{4}\.?$",
+                ]
+
+                if any(
+                    re.search(pattern, display_text, re.IGNORECASE)
+                    for pattern in provider_patterns
+                ):
+                    continue
+
+            text_offset = line.find(display_text)
+
+            if text_offset == -1:
+                continue
+
+            start = line_start + text_offset
+            end = start + len(display_text)
+
+            entity_label = current_section
+
+            # Some resumes list awards and certifications
+            # inside the Education section.
+            if current_section == "EDUCATION":
+                if re.search(
+                    r"\b(certified|certification|certificate|"
+                    r"award|fellow|dean'?s list)\b",
+                    display_text,
+                    re.IGNORECASE,
+                ):
+                    entity_label = "CERTIFICATION"
+
+            entities.append(
+                _make_entity(
+                    display_text,
+                    entity_label,
+                    start,
+                    end,
+                    confidence=None,
+                    source="SECTION_BASED_EXTRACTION",
+                )
+            )
 
     return entities
-
 
 def extract_regex_entities(text: str) -> list[Entity]:
     """Find emails, phone numbers and experience durations with regex."""
@@ -377,6 +671,12 @@ def extract_resume_entities(text: str) -> dict[str, Any]:
     ]
     entities += extract_regex_entities(text)
     entities += extract_section_entities(text)
+
+    entities = [
+    entity
+    for entity in entities
+    if not is_noise_text(entity["text"])
+]
 
     entities = sort_entities(entities)
 

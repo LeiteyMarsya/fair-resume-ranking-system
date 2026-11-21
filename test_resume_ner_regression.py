@@ -93,12 +93,72 @@ ISS Telemetry Monitoring System
     assert any(e["label"] == "PROJECT" for e in project)
 
 
+def test_individual_skills_from_comma_separated_lines():
+
+    text = """TECHNICAL SKILLS
+Programming Languages: Python, HTML, CSS, C# (Int.); JavaScript, PHP, MySQL
+Tools: Microsoft Excel, Microsoft Word, Visual Studio Code (Proficient); Wireshark, XAMPP
+"""
+
+    result = resume_ner.extract_resume_entities(text)
+    entities = result["entities"]
+
+    expected_skills = [
+        "Python",
+        "HTML",
+        "CSS",
+        "C#",
+        "JavaScript",
+        "PHP",
+        "MySQL",
+        "Microsoft Excel",
+        "Microsoft Word",
+        "Visual Studio Code",
+        "Wireshark",
+        "XAMPP",
+    ]
+
+    for skill in expected_skills:
+
+        matches = get_entity(entities, skill)
+
+        assert len(matches) == 1, (
+            f"Expected exactly one entity for {skill}, "
+            f"got {len(matches)}"
+        )
+
+        assert matches[0]["label"] == "SKILL"
+
+        entity = matches[0]
+
+        assert text[entity["start"]:entity["end"]] == skill, (
+            f"Incorrect character offsets for {skill}"
+        )
+
+    # Ensure proficiency annotations and introductory labels
+    # are not extracted as individual skills.
+    unwanted_text = [
+        "Programming Languages:",
+        "Tools:",
+        "Int.",
+        "Proficient",
+    ]
+
+    for unwanted in unwanted_text:
+        assert not get_entity(entities, unwanted), (
+            f"Unexpected entity: {unwanted}"
+        )
+
+    print("[PASS] Individual skills extracted correctly")
+
+
 def run_tests():
     tests = [
         test_skill_section_after_certification,
         test_experience_duration_priority,
         test_exact_character_offsets,
         test_education_and_project_extraction,
+        test_individual_skills_from_comma_separated_lines,
     ]
 
     passed = 0

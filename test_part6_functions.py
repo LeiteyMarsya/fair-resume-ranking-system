@@ -41,7 +41,8 @@ try:
         attribute_name="gender",
         attribute_value="Female",
         availability_status="AVAILABLE",
-        data_source="SIMULATED_TEST_DATA"
+        data_source="SIMULATED_TEST_DATA",
+        is_simulated=True,
     )
 
     audit_id_2 = db.save_fairness_audit_data(
@@ -49,7 +50,8 @@ try:
         attribute_name="gender",
         attribute_value="Male",
         availability_status="AVAILABLE",
-        data_source="SIMULATED_TEST_DATA"
+        data_source="SIMULATED_TEST_DATA",
+        is_simulated=True,
     )
 
     print("Application 1 audit ID:", audit_id_1)
@@ -61,7 +63,11 @@ try:
 
     print("\nTEST 2: Retrieve demographic audit data")
 
-    audit_records = db.get_fairness_audit_data()
+    audit_records = [
+        record
+        for record in db.get_fairness_audit_data(include_simulated=True)
+        if record["data_source"] == "SIMULATED_TEST_DATA"
+    ]
 
     for record in audit_records:
         print(dict(record))
@@ -84,7 +90,11 @@ try:
 
     assert updated_audit_id == audit_id_1
 
-    audit_records = db.get_fairness_audit_data()
+    audit_records = [
+        record
+        for record in db.get_fairness_audit_data(include_simulated=True)
+        if record["data_source"] == "SIMULATED_TEST_DATA"
+    ]
 
     assert len(audit_records) == 2
 
@@ -130,7 +140,12 @@ try:
     print("All records:", len(simulated_records))
 
     assert len(actual_records) == 0
-    assert len(simulated_records) == 2
+    test_records = [
+        record for record in simulated_records
+        if record["outcome_source"] == "SIMULATED_TEST_DATA"
+    ]
+
+    assert len(test_records) == 2
 
     for record in simulated_records:
         print(dict(record))
@@ -156,7 +171,12 @@ try:
         include_simulated=True
     )
 
-    assert len(simulated_records) == 2
+    test_records = [
+        record for record in simulated_records
+        if record["outcome_source"] == "SIMULATED_TEST_DATA"
+    ]
+
+    assert len(test_records) == 2
 
     print("Duplicate prevention: PASSED")
     print("Existing outcome updated successfully.")

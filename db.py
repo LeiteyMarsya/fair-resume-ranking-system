@@ -1393,6 +1393,380 @@ def get_resume_entities(
         connection.close()
 
 
+def reconcile_resume_entities(
+    resume_id: int,
+    extracted_entities: list[dict],
+) -> dict:
+    """
+    Safely reconcile newly extracted resume entities with
+    existing database records.
+
+    Existing entity IDs and their ESCO mappings are preserved
+    whenever a reliable text-and-label match is found.
+
+    Obsolete entities with reviewed or non-pending mappings
+    prevent reconciliation and trigger a rollback.
+    """
+
+    connection = get_connection()
+
+    inserted = 0
+    updated = 0
+    preserved = 0
+    removed = 0
+    mappings_removed = 0
+
+    try:
+
+        cursor = connection.cursor()
+
+        # Start one transaction for the entire operation.
+        cursor.execute("BEGIN IMMEDIATE")
+
+        # --------------------------------------------------
+        # 1. LOAD EXISTING ENTITIES
+        # --------------------------------------------------
+
+        cursor.execute(
+            """
+            SELECT *
+            FROM resume_entities
+            WHERE resume_id = ?
+            ORDER BY entity_id ASC
+            """,
+            (resume_id,)
+        )
+
+        existing_entities = [
+            dict(row)
+            for row in cursor.fetchall()
+        ]
+
+        # --------------------------------------------------
+        # 2. NORMALIZE NEW ENTITIES
+        # --------------------------------------------------
+
+        new_entities = []
+
+        for entity in extracted_entities:
+
+            entity_text = entity.get("text")
+            entity_label = entity.get("label")
+
+            if not entity_text or not entity_label:
+                raise ValueError(
+                    "Every extracted entity must have "
+                    "non-empty text and label."
+                )
+
+            new_entities.append({
+                "entity_text": str(entity_text),
+                "entity_label": str(entity_label),
+                "start_char": entity.get("start"),
+                "end_char": entity.get("end"),
+                "confidence": entity.get("confidence"),
+                "source": entity.get("source"),
+            })
+
+        # --------------------------------------------------
+        # 3. MATCH EXACT OCCURRENCES FIRST
+        # --------------------------------------------------
+
+        unmatched_old = set(
+            range(len(existing_entities))
+        )
+
+        unmatched_new = set(
+            range(len(new_entities))
+        )
+
+        matches = {}
+
+        old_exact_lookup = {}
+
+        for old_index, old in enumerate(existing_entities):
+
+            key = (
+                old["entity_text"],
+                old["entity_label"],
+                old["start_char"],
+                old["end_char"],
+            )
+
+            old_exact_lookup.setdefault(
+                key,
+                []
+            ).append(old_index)
+
+        for new_index, new in enumerate(new_entities):
+
+            key = (
+                new["entity_text"],
+                new["entity_label"],
+                new["start_char"],
+                new["end_char"],
+            )
+
+            candidates = old_exact_lookup.get(
+                key,
+                []
+            )
+
+            for old_index in candidates:
+
+                if old_index in unmatched_old:
+
+                    matches[new_index] = old_index
+
+                    unmatched_old.remove(old_index)
+                    unmatched_new.remove(new_index)
+
+                    break
+
+        # --------------------------------------------------
+        # 4. MATCH REMAINING OCCURRENCES BY NEAREST POSITION
+        # --------------------------------------------------
+
+        position_candidates = []
+
+        for new_index in unmatched_new:
+
+            new = new_entities[new_index]
+
+            if new["start_char"] is None:
+                continue
+
+            for old_index in unmatched_old:
+
+                old = existing_entities[old_index]
+
+                if (
+                    old["entity_text"] == new["entity_text"]
+                    and old["entity_label"] == new["entity_label"]
+                    and old["start_char"] is not None
+                ):
+
+                    distance = abs(
+                        int(old["start_char"])
+                        - int(new["start_char"])
+                    )
+
+                    position_candidates.append(
+                        (
+                            distance,
+                            int(old["start_char"]),
+                            int(new["start_char"]),
+                            old_index,
+                            new_index,
+                        )
+                    )
+
+        # Closest occurrences are matched first.
+        position_candidates.sort()
+
+        for (
+            distance,
+            old_position,
+            new_position,
+            old_index,
+            new_index,
+        ) in position_candidates:
+
+            if (
+                old_index not in unmatched_old
+                or new_index not in unmatched_new
+            ):
+                continue
+
+            matches[new_index] = old_index
+
+            unmatched_old.remove(old_index)
+            unmatched_new.remove(new_index)
+
+        # --------------------------------------------------
+        # 5. UPDATE MATCHED ENTITIES
+        # --------------------------------------------------
+
+        for new_index, old_index in matches.items():
+
+            old = existing_entities[old_index]
+            new = new_entities[new_index]
+
+            changed = any(
+                old[column] != new[column]
+                for column in (
+                    "start_char",
+                    "end_char",
+                    "confidence",
+                    "source",
+                )
+            )
+
+            if changed:
+
+                cursor.execute(
+                    """
+                    UPDATE resume_entities
+                    SET
+                        start_char = ?,
+                        end_char = ?,
+                        confidence = ?,
+                        source = ?
+                    WHERE entity_id = ?
+                    """,
+                    (
+                        new["start_char"],
+                        new["end_char"],
+                        new["confidence"],
+                        new["source"],
+                        old["entity_id"],
+                    )
+                )
+
+                updated += 1
+
+            else:
+
+                preserved += 1
+
+        # --------------------------------------------------
+        # 6. CHECK OBSOLETE ENTITIES AND THEIR MAPPINGS
+        # --------------------------------------------------
+
+        obsolete_ids = [
+            existing_entities[index]["entity_id"]
+            for index in unmatched_old
+        ]
+
+        if obsolete_ids:
+
+            placeholders = ",".join(
+                "?" for _ in obsolete_ids
+            )
+
+            cursor.execute(
+                f"""
+                SELECT
+                    mapping_id,
+                    entity_id,
+                    mapping_status,
+                    reviewed
+                FROM resume_entity_esco_mappings
+                WHERE entity_id IN ({placeholders})
+                AND (
+                    COALESCE(reviewed, 0) != 0
+                    OR UPPER(
+                        COALESCE(mapping_status, 'PENDING')
+                    ) != 'PENDING'
+                )
+                """,
+                obsolete_ids
+            )
+
+            protected_mappings = cursor.fetchall()
+
+            if protected_mappings:
+
+                protected_ids = sorted({
+                    row["entity_id"]
+                    for row in protected_mappings
+                })
+
+                raise ValueError(
+                    "Reconciliation stopped. Some obsolete "
+                    "entities have reviewed or non-pending "
+                    "ESCO mappings. Manual review is required. "
+                    f"Protected entity IDs: {protected_ids}"
+                )
+
+            # --------------------------------------------------
+            # 7. DELETE SAFE PENDING MAPPINGS
+            # --------------------------------------------------
+
+            cursor.execute(
+                f"""
+                DELETE FROM resume_entity_esco_mappings
+                WHERE entity_id IN ({placeholders})
+                """,
+                obsolete_ids
+            )
+
+            mappings_removed = cursor.rowcount
+
+            # --------------------------------------------------
+            # 8. DELETE OBSOLETE ENTITIES
+            # --------------------------------------------------
+
+            cursor.execute(
+                f"""
+                DELETE FROM resume_entities
+                WHERE entity_id IN ({placeholders})
+                """,
+                obsolete_ids
+            )
+
+            removed = cursor.rowcount
+
+        # --------------------------------------------------
+        # 9. INSERT NEW ENTITIES
+        # --------------------------------------------------
+
+        for new_index in sorted(unmatched_new):
+
+            new = new_entities[new_index]
+
+            cursor.execute(
+                """
+                INSERT INTO resume_entities (
+                    resume_id,
+                    entity_text,
+                    entity_label,
+                    start_char,
+                    end_char,
+                    confidence,
+                    source,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    resume_id,
+                    new["entity_text"],
+                    new["entity_label"],
+                    new["start_char"],
+                    new["end_char"],
+                    new["confidence"],
+                    new["source"],
+                    datetime.now(timezone.utc).isoformat(),
+                )
+            )
+
+            inserted += 1
+
+        # --------------------------------------------------
+        # 10. COMMIT ALL CHANGES
+        # --------------------------------------------------
+
+        connection.commit()
+
+        return {
+            "inserted": inserted,
+            "updated": updated,
+            "preserved": preserved,
+            "removed": removed,
+            "mappings_removed": mappings_removed,
+            "total_entities": len(new_entities),
+        }
+
+    except Exception:
+
+        connection.rollback()
+        raise
+
+    finally:
+
+        connection.close()
+
 # ============================================================
 # PART 6 - FAIRNESS EVALUATION DATABASE FUNCTIONS
 # ============================================================
